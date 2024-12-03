@@ -5,102 +5,154 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 	"github.com/joho/godotenv"
 	"github.com/julienschmidt/httprouter"
 )
 
-var jwtSecret []byte
-
 func main() {
-	// Load environment variables
+	// Get env
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		fmt.Println("Error loading .env file")
 	}
 
-	// Read JWT Secret from .env
-	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
-	if jwtSecret == nil {
-		log.Fatal("JWT_SECRET not set in .env file")
-	}
+	// Get env by key
+	fmt.Println("JWT Secret :", os.Getenv("JWT_SECRET"))
 
-	// Initialize router
+	// Create a new router
 	router := httprouter.New()
 
-	// Public routes
-	router.POST("/login", LoginHandler)
+	newrouter := logging(router)
 
-	// Protected routes
-	router.GET("/protected", JWTMiddleware(ProtectedHandler))
+	// Landing endpoint
+	router.GET("/", welcome)
 
-	// Start the server
-	fmt.Println("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", router))
+	// Login endpoint
+	router.POST("/login", login)
+
+	// Dashboard endpoint
+	router.POST("/dashboard", authentication(dashboard))
+
+	// Get all user endpoint
+	router.POST("/user/all", authentication(authorization(getUser)))
+
+	fmt.Println("Server running on port 8080")
+	log.Fatal(http.ListenAndServe(":8080", newrouter))
 }
 
-// LoginHandler generates a JWT for valid users
-func LoginHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	// Validate credentials (hardcoded for demo)
-	if username != "admin" || password != "password" {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	// Generate JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": username,
-		"exp":      time.Now().Add(time.Hour * 1).Unix(),
+func logging(router http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// log.Println("Masuk pak eko")
+		router.ServeHTTP(w, r)
 	})
-
-	tokenString, err := token.SignedString(jwtSecret)
-	if err != nil {
-		http.Error(w, "Could not generate token", http.StatusInternalServerError)
-		return
-	}
-
-	// Return token
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf(`{"token":"%s"}`, tokenString)))
 }
 
-// JWTMiddleware validates the JWT in the request
-func JWTMiddleware(next httprouter.Handle) httprouter.Handle {
+func authorization(next httprouter.Handle) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		// Get token from Authorization header
-		tokenString := r.Header.Get("Authorization")
-		if tokenString == "" {
-			http.Error(w, "Authorization header missing", http.StatusUnauthorized)
-			return
-		}
-
-		// Parse and validate token
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
-			return
-		}
-
-		// Pass to the next handler
+		// Check authorization
+		// if authorized
+		// next(w, r, ps)
+		// else
+		// w.WriteHeader(http.StatusUnauthorized)
+		// w.Write([]byte("Unauthorized"))
+		log.Print("Authorization")
 		next(w, r, ps)
 	}
 }
 
-// ProtectedHandler is a sample protected route
-func ProtectedHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"message":"This is a protected route"}`))
+func authentication(next httprouter.Handle) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		tokenString := r.Header.Get("Authorization")
+		if tokenString == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Unauthorized"))
+			log.Print("Token not found")
+			return
+		}
+
+		// remove bearer from token
+		tokenString = strings.Replace(tokenString, "Bearer ", "", 1)
+
+		log.Print(os.Getenv("JWT_SECRET"))
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("Unauthorized"))
+				log.Print("Wrong token")
+				return nil, fmt.Errorf("There was an error")
+			}
+
+			return []byte(os.Getenv("JWT_SECRET")), nil
+		})
+
+		if err == nil && token.Valid {
+			next(w, r, ps)
+		} else {
+			log.Print(err)
+			log.Print(token.Valid)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Unauthorized"))
+			log.Print("Token not valid")
+			return
+		}
+
+		next(w, r, ps)
+	}
+}
+
+// ------------------------------------------------------------------------------------
+
+func welcome(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	w.Write([]byte("Welcome"))
+}
+
+func login(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	log.Println("Username :", username)
+	log.Println("Password :", password)
+
+	if username == "admin" && password == "admin" {
+		// Create a new token
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"username": username,
+			"exp":      time.Now().Add(time.Hour * 24).Unix(),
+		})
+
+		log.Print(os.Getenv("JWT_SECRET"))
+
+		// Sign the token with our secret
+		tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Write([]byte(tokenString))
+		return
+	}
+
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Write([]byte("Wrong username or password"))
+}
+
+func dashboard(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	w.Write([]byte("Dashboard"))
+}
+
+func getUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	user := map[string]string{
+		"username": "admin",
+		"email":    "asd@mail.com",
+	}
+
+	w.Write([]byte(user["username"]))
 }
